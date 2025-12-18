@@ -1,242 +1,242 @@
 from __future__ import annotations
+
 from dataclasses import dataclass, asdict
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
+
 import pandas as pd
 from pandas.api import types as ptypes
 
-@dataclass
-class FeatureStats:
-    """Статистика по отдельной колонке (признаку)."""
-    feat_name: str
-    feat_type: str
-    count_total: int
-    count_null: int
-    null_ratio: float
-    n_unique: int
-    sample_values: List[Any]
-    is_numeric: bool
-    # Числовые метрики
-    min_val: Optional[float] = None
-    max_val: Optional[float] = None
-    mean_val: Optional[float] = None
-    std_val: Optional[float] = None
 
-    def as_dictionary(self) -> Dict[str, Any]:
+@dataclass
+class ColumnSummary:
+    name: str
+    dtype: str
+    non_null: int
+    missing: int
+    missing_share: float
+    unique: int
+    example_values: List[Any]
+    is_numeric: bool
+    min: Optional[float] = None
+    max: Optional[float] = None
+    mean: Optional[float] = None
+    std: Optional[float] = None
+
+    def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
-@dataclass
-class DatasetMeta:
-    """Общая мета-информация о датасете."""
-    total_rows: int
-    total_cols: int
-    features: List[FeatureStats]
 
-    def as_dictionary(self) -> Dict[str, Any]:
+@dataclass
+class DatasetSummary:
+    n_rows: int
+    n_cols: int
+    columns: List[ColumnSummary]
+
+    def to_dict(self) -> Dict[str, Any]:
         return {
-            "total_rows": self.total_rows,
-            "total_cols": self.total_cols,
-            "columns": [f.as_dictionary() for f in self.features],
+            "n_rows": self.n_rows,
+            "n_cols": self.n_cols,
+            "columns": [c.to_dict() for c in self.columns],
         }
 
-def get_dataset_overview(
+
+def summarize_dataset(
     df: pd.DataFrame,
-    samples_limit: int = 3,
-) -> DatasetMeta:
+    example_values_per_column: int = 3,
+) -> DatasetSummary:
     """
-    Собирает статистику по датасету: размеры, типы, пропуски, примеры.
+    Полный обзор датасета по колонкам:
+    - количество строк/столбцов;
+    - типы;
+    - пропуски;
+    - количество уникальных;
+    - несколько примерных значений;
+    - базовые числовые статистики (для numeric).
     """
     n_rows, n_cols = df.shape
-    feats_list: List[FeatureStats] = []
+    columns: List[ColumnSummary] = []
 
-    for col in df.columns:
-        series = df[col]
-        dtype_str = str(series.dtype)
-        
-        cnt_valid = int(series.notna().sum())
-        cnt_null = n_rows - cnt_valid
-        ratio_null = float(cnt_null / n_rows) if n_rows > 0 else 0.0
-        cnt_unique = int(series.nunique(dropna=True))
+    for name in df.columns:
+        s = df[name]
+        dtype_str = str(s.dtype)
 
-        # Берем несколько примеров для наглядности
-        samples = (
-            series.dropna().astype(str).unique()[:samples_limit].tolist()
-            if cnt_valid > 0
+        non_null = int(s.notna().sum())
+        missing = n_rows - non_null
+        missing_share = float(missing / n_rows) if n_rows > 0 else 0.0
+        unique = int(s.nunique(dropna=True))
+
+        # Примерные значения выводим как строки
+        examples = (
+            s.dropna().astype(str).unique()[:example_values_per_column].tolist()
+            if non_null > 0
             else []
         )
 
-        is_num = bool(ptypes.is_numeric_dtype(series))
-        
-        # Считаем базовую статистику только для чисел
-        mn, mx, avg, dev = None, None, None, None
-        if is_num and cnt_valid > 0:
-            mn = float(series.min())
-            mx = float(series.max())
-            avg = float(series.mean())
-            dev = float(series.std())
+        is_numeric = bool(ptypes.is_numeric_dtype(s))
+        min_val: Optional[float] = None
+        max_val: Optional[float] = None
+        mean_val: Optional[float] = None
+        std_val: Optional[float] = None
 
-        feats_list.append(
-            FeatureStats(
-                feat_name=col,
-                feat_type=dtype_str,
-                count_total=cnt_valid,
-                count_null=cnt_null,
-                null_ratio=ratio_null,
-                n_unique=cnt_unique,
-                sample_values=samples,
-                is_numeric=is_num,
-                min_val=mn,
-                max_val=mx,
-                mean_val=avg,
-                std_val=dev,
+        if is_numeric and non_null > 0:
+            min_val = float(s.min())
+            max_val = float(s.max())
+            mean_val = float(s.mean())
+            std_val = float(s.std())
+
+        columns.append(
+            ColumnSummary(
+                name=name,
+                dtype=dtype_str,
+                non_null=non_null,
+                missing=missing,
+                missing_share=missing_share,
+                unique=unique,
+                example_values=examples,
+                is_numeric=is_numeric,
+                min=min_val,
+                max=max_val,
+                mean=mean_val,
+                std=std_val,
             )
         )
 
-    return DatasetMeta(total_rows=n_rows, total_cols=n_cols, features=feats_list)
+    return DatasetSummary(n_rows=n_rows, n_cols=n_cols, columns=columns)
 
-def calculate_missing_stats(df: pd.DataFrame) -> pd.DataFrame:
+
+def missing_table(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Возвращает DataFrame с количеством и долей пропусков по каждой колонке.
+    Таблица пропусков по колонкам: count/share.
     """
     if df.empty:
-        return pd.DataFrame(columns=["null_count", "null_ratio"])
-    
-    counts = df.isna().sum()
-    ratios = counts / len(df)
-    
-    result = pd.DataFrame({
-        "null_count": counts,
-        "null_ratio": ratios,
-    }).sort_values("null_ratio", ascending=False)
-    
+        return pd.DataFrame(columns=["missing_count", "missing_share"])
+
+    total = df.isna().sum()
+    share = total / len(df)
+    result = (
+        pd.DataFrame(
+            {
+                "missing_count": total,
+                "missing_share": share,
+            }
+        )
+        .sort_values("missing_share", ascending=False)
+    )
     return result
 
-def calculate_correlations(df: pd.DataFrame) -> pd.DataFrame:
+
+def correlation_matrix(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Считает корреляцию Пирсона только для числовых колонок.
+    Корреляция Пирсона для числовых колонок.
     """
     numeric_df = df.select_dtypes(include="number")
     if numeric_df.empty:
         return pd.DataFrame()
     return numeric_df.corr(numeric_only=True)
 
-def get_top_values(
+
+def top_categories(
     df: pd.DataFrame,
-    max_cols_to_check: int = 5,
+    max_columns: int = 5,
     top_k: int = 5,
 ) -> Dict[str, pd.DataFrame]:
     """
-    Для строковых/категориальных колонок находит top_k самых частых значений.
+    Для категориальных/строковых колонок считает top-k значений.
+    Возвращает словарь: колонка -> DataFrame со столбцами value/count/share.
     """
-    results: Dict[str, pd.DataFrame] = {}
-    target_cols = []
-    
-    # Отбираем кандидатов (строки или категории)
+    result: Dict[str, pd.DataFrame] = {}
+    candidate_cols: List[str] = []
+
     for name in df.columns:
         s = df[name]
         if ptypes.is_object_dtype(s) or isinstance(s.dtype, pd.CategoricalDtype):
-            target_cols.append(name)
+            candidate_cols.append(name)
 
-    # Обрабатываем только первые max_cols_to_check колонок
-    for col in target_cols[:max_cols_to_check]:
-        s = df[col]
-        # value_counts уже сортирует по убыванию
-        counts = s.value_counts(dropna=True).head(top_k)
-        if counts.empty:
+    for name in candidate_cols[:max_columns]:
+        s = df[name]
+        vc = s.value_counts(dropna=True).head(top_k)
+        if vc.empty:
             continue
-            
-        shares = counts / counts.sum()
-        df_stats = pd.DataFrame({
-            "value": counts.index.astype(str),
-            "count": counts.values,
-            "share": shares.values,
-        })
-        results[col] = df_stats
-        
-    return results
-
-def assess_data_quality(meta: DatasetMeta, missing_stats: pd.DataFrame) -> Dict[str, Any]:
-    """
-    Вычисляет эвристики качества данных (HW03 additions included).
-    Возвращает словарь с флагами и итоговым скором.
-    """
-    indicators: Dict[str, Any] = {}
-    
-    # 1. Проверка размеров
-    indicators["is_too_small"] = meta.total_rows < 100
-    indicators["is_too_wide"] = meta.total_cols > 100
-    
-    # 2. Проверка пропусков
-    peak_null_ratio = float(missing_stats["null_ratio"].max()) if not missing_stats.empty else 0.0
-    indicators["critical_null_ratio"] = peak_null_ratio
-    indicators["has_severe_missing"] = peak_null_ratio > 0.5
-
-    # Данные для анализа колонок
-    cols_df = pd.DataFrame([f.as_dictionary() for f in meta.features])
-
-    # 3. Эвристика: Константные колонки (HW03)
-    # Если уникальное значение всего 1 (и не всё NaN)
-    if not cols_df.empty:
-        indicators["has_constant_cols"] = bool(
-            ((cols_df["n_unique"] == 1) & (cols_df["null_ratio"] < 1.0)).any()
+        share = vc / vc.sum()
+        table = pd.DataFrame(
+            {
+                "value": vc.index.astype(str),
+                "count": vc.values,
+                "share": share.values,
+            }
         )
+        result[name] = table
+
+    return result
+
+
+def compute_quality_flags(summary: DatasetSummary, missing_df: pd.DataFrame) -> Dict[str, Any]:
+    """
+    Простейшие эвристики «качества» данных:
+    - слишком много пропусков;
+    - подозрительно мало строк;
+    и т.п.
+    """
+    flags: Dict[str, Any] = {}
+    flags["too_few_rows"] = summary.n_rows < 100
+    flags["too_many_columns"] = summary.n_cols > 100
+
+    max_missing_share = float(missing_df["missing_share"].max()) if not missing_df.empty else 0.0
+    flags["max_missing_share"] = max_missing_share
+    flags["too_many_missing"] = max_missing_share > 0.5
+
+    # Домашнее задание
+    # наличие константных колонок
+    flatten_summary = flatten_summary_for_print(summary)
+    if not missing_df.empty:
+        flags["has_constant_columns"] = (flatten_summary["unique"] == 1).any()
     else:
-        indicators["has_constant_cols"] = False
+        flags["has_constant_columns"] = False
 
-    # 4. Эвристика: Высокая кардинальность категорий (HW03)
-    # Много уникальных значений в нечисловых полях (например, сырой текст или ID)
-    cardinality_limit = 50
-    has_high_card = False
-    for f in meta.features:
-        if not f.is_numeric and f.n_unique > cardinality_limit:
-            has_high_card = True
-            break
-    indicators["has_high_cardinality"] = has_high_card
+    # наличие высококардинальных категориальных признаков
+    if not missing_df.empty:
+        high_cardinality_threshold = 50
+        flags["has_high_cardinality_categoricals"] = ((flatten_summary.is_numeric) & (flatten_summary.unique > high_cardinality_threshold)).any()
+    else:
+        flags["has_high_cardinality_categoricals"] = False
 
-    # 5. Эвристика: Подозрительные дубликаты ID (HW03)
-    # Если есть колонка user_id/id, но она не уникальна
-    suspicious_ids = False
-    for f in meta.features:
-        # Простая проверка по имени
-        if f.feat_name.lower() in ['id', 'user_id', 'uid'] and f.n_unique < meta.total_rows:
-            suspicious_ids = True
-    indicators["has_id_duplicates"] = suspicious_ids
-
-    # Расчет итогового балла (Quality Score)
+    # Простейший «скор» качества + признаки из д/з
     score = 1.0
-    
-    # Штраф за пропуски
-    score -= peak_null_ratio 
-    
-    # Штрафы за структуру
-    if indicators["is_too_small"]: score -= 0.2
-    if indicators["is_too_wide"]: score -= 0.1
-    
-    # Штрафы за новые эвристики
-    if indicators["has_constant_cols"]: score -= 0.1
-    if indicators["has_high_cardinality"]: score -= 0.05
-    if indicators["has_id_duplicates"]: score -= 0.15
+    score -= max_missing_share  # чем больше пропусков, тем хуже
+    if summary.n_rows < 100:
+        score -= 0.2
+    if summary.n_cols > 100:
+        score -= 0.1
+    if flags["has_high_cardinality_categoricals"]:
+        score -= 0.05
+    if flags["has_constant_columns"]:
+        score -= 0.05
 
-    indicators["health_score"] = max(0.0, min(1.0, score))
-    
-    return indicators
+    score = max(0.0, min(1.0, score))
+    flags["quality_score"] = score
 
-def meta_to_dataframe(meta: DatasetMeta) -> pd.DataFrame:
+    return flags
+
+
+def flatten_summary_for_print(summary: DatasetSummary) -> pd.DataFrame:
     """
-    Преобразует объект DatasetMeta в плоскую таблицу для печати/сохранения.
+    Превращает DatasetSummary в табличку для более удобного вывода.
     """
-    data = []
-    for f in meta.features:
-        data.append({
-            "column": f.feat_name,
-            "type": f.feat_type,
-            "filled": f.count_total,
-            "nulls": f.count_null,
-            "null_pct": f.null_ratio,
-            "unique": f.n_unique,
-            "is_num": f.is_numeric,
-            "min": f.min_val,
-            "max": f.max_val,
-            "mean": f.mean_val,
-            "std": f.std_val,
-        })
-    return pd.DataFrame(data)
+    rows: List[Dict[str, Any]] = []
+    for col in summary.columns:
+        rows.append(
+            {
+                "name": col.name,
+                "dtype": col.dtype,
+                "non_null": col.non_null,
+                "missing": col.missing,
+                "missing_share": col.missing_share,
+                "unique": col.unique,
+                "is_numeric": col.is_numeric,
+                "min": col.min,
+                "max": col.max,
+                "mean": col.mean,
+                "std": col.std,
+            }
+        )
+    return pd.DataFrame(rows)

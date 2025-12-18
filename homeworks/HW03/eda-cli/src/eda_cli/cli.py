@@ -1,19 +1,20 @@
 from __future__ import annotations
+
 from pathlib import Path
+from typing import Optional
+
 import pandas as pd
 import typer
-# Импортируем наши переименованные функции из core
+
 from .core import (
-    DatasetMeta,
-    assess_data_quality,
-    calculate_correlations,
-    meta_to_dataframe,
-    calculate_missing_stats,
-    get_dataset_overview,
-    get_top_values,
+    DatasetSummary,
+    compute_quality_flags,
+    correlation_matrix,
+    flatten_summary_for_print,
+    missing_table,
+    summarize_dataset,
+    top_categories,
 )
-# Предполагаем, что модуль viz тоже был отрефакторен или адаптирован. 
-# Используем здесь "логические" имена функций визуализации.
 from .viz import (
     plot_correlation_heatmap,
     plot_missing_matrix,
@@ -21,123 +22,138 @@ from .viz import (
     save_top_categories_tables,
 )
 
-app = typer.Typer(help="CLI утилита для EDA (HW03 version)")
+app = typer.Typer(help="Мини-CLI для EDA CSV-файлов")
 
-def _read_csv(
-    file_path: Path,
-    separator: str = ",",
-    encoding_type: str = "utf-8",
+
+def _load_csv(
+    path: Path,
+    sep: str = ",",
+    encoding: str = "utf-8",
 ) -> pd.DataFrame:
-    if not file_path.exists():
-        raise typer.BadParameter(f"Файл не найден: '{file_path}'")
+    if not path.exists():
+        raise typer.BadParameter(f"Файл '{path}' не найден")
     try:
-        return pd.read_csv(file_path, sep=separator, encoding=encoding_type)
-    except Exception as e:
-        raise typer.BadParameter(f"Ошибка чтения CSV: {e}") from e
+        return pd.read_csv(path, sep=sep, encoding=encoding)
+    except Exception as exc:  # noqa: BLE001
+        raise typer.BadParameter(f"Не удалось прочитать CSV: {exc}") from exc
+
+
+
 
 @app.command()
 def overview(
-    path: str = typer.Argument(..., help="Путь к файлу данных."),
-    sep: str = typer.Option(",", help="Разделитель столбцов."),
+    path: str = typer.Argument(..., help="Путь к CSV-файлу."),
+    sep: str = typer.Option(",", help="Разделитель в CSV."),
     encoding: str = typer.Option("utf-8", help="Кодировка файла."),
 ) -> None:
     """
-    Вывести базовую информацию о датасете в консоль.
+    Напечатать краткий обзор датасета:
+    - размеры;
+    - типы;
+    - простая табличка по колонкам.
     """
-    df = _read_csv(Path(path), separator=sep, encoding_type=encoding)
-    
-    meta: DatasetMeta = get_dataset_overview(df)
-    summary_table = meta_to_dataframe(meta)
-    
-    typer.echo(f"Всего строк: {meta.total_rows}")
-    typer.echo(f"Всего колонок: {meta.total_cols}")
-    typer.echo("\nСводка по признакам:")
-    typer.echo(summary_table.to_string(index=False))
+    df = _load_csv(Path(path), sep=sep, encoding=encoding)
+    summary: DatasetSummary = summarize_dataset(df)
+    summary_df = flatten_summary_for_print(summary)
+
+    typer.echo(f"Строк: {summary.n_rows}")
+    typer.echo(f"Столбцов: {summary.n_cols}")
+    typer.echo("\nКолонки:")
+    typer.echo(summary_df.to_string(index=False))
+
 
 @app.command()
 def report(
-    path: str = typer.Argument(..., help="Путь к входному CSV."),
-    out_dir: str = typer.Option("reports", help="Папка для сохранения отчета."),
-    sep: str = typer.Option(",", help="Разделитель."),
-    encoding: str = typer.Option("utf-8", help="Кодировка."),
-    # Новые параметры HW03
-    max_hist_columns: int = typer.Option(6, help="Лимит числовых колонок для гистограмм."),
-    title: str = typer.Option("# EDA Report", help="Заголовок внутри Markdown отчета."),
-    top_k_categories: int = typer.Option(5, help="Сколько топ-значений выводить для категорий."),
-    min_missing_share: float = typer.Option(0.5, help="Порог доли пропусков для предупреждения."),
+    path: str = typer.Argument(..., help="Путь к CSV-файлу."),
+    out_dir: str = typer.Option("reports", help="Каталог для отчёта."),
+    sep: str = typer.Option(",", help="Разделитель в CSV."),
+    encoding: str = typer.Option("utf-8", help="Кодировка файла."),
+    # Домашнее задание:
+    max_hist_columns: int = typer.Option(6, help="Максимум числовых колонок для гистограмм."),
+    top_k_categories: int = typer.Option(5, help="Количество top-значений выводить для категориальных признаков."),
+    title: str = typer.Option("EDA-отчёт", help="Название отчета"),
 ) -> None:
     """
-    Сгенерировать полный отчет (Markdown + CSV + PNG).
+    Сгенерировать полный EDA-отчёт:
+    - текстовый overview и summary по колонкам (CSV/Markdown);
+    - статистика пропусков;
+    - корреляционная матрица;
+    - top-k категорий по категориальным признакам;
+    - картинки: гистограммы, матрица пропусков, heatmap корреляции.
     """
-    report_path = Path(out_dir)
-    report_path.mkdir(parents=True, exist_ok=True)
+    out_root = Path(out_dir)
+    out_root.mkdir(parents=True, exist_ok=True)
 
-    df = _read_csv(Path(path), separator=sep, encoding_type=encoding)
+    df = _load_csv(Path(path), sep=sep, encoding=encoding)
 
-    # 1. Расчет статистик
-    meta = get_dataset_overview(df)
-    summary_tbl = meta_to_dataframe(meta)
-    missing_tbl = calculate_missing_stats(df)
-    corr_tbl = calculate_correlations(df)
-    # Используем параметр top_k_categories
-    top_vals = get_top_values(df, top_k=top_k_categories)
+    # 1. Обзор
+    summary = summarize_dataset(df)
+    summary_df = flatten_summary_for_print(summary)
+    missing_df = missing_table(df)
+    corr_df = correlation_matrix(df)
+    top_cats = top_categories(df, top_k=top_k_categories)
 
-    # 2. Оценка качества (эвристики)
-    quality_metrics = assess_data_quality(meta, missing_tbl)
+    # 2. Качество в целом
+    quality_flags = compute_quality_flags(summary, missing_df)
 
-    # 3. Сохранение таблиц
-    summary_tbl.to_csv(report_path / "summary.csv", index=False)
-    if not missing_tbl.empty:
-        missing_tbl.to_csv(report_path / "missing.csv", index=True)
-    if not corr_tbl.empty:
-        corr_tbl.to_csv(report_path / "correlation.csv", index=True)
-    
-    save_top_categories_tables(top_vals, report_path / "top_categories")
+    # 3. Сохраняем табличные артефакты
+    summary_df.to_csv(out_root / "summary.csv", index=False)
+    if not missing_df.empty:
+        missing_df.to_csv(out_root / "missing.csv", index=True)
+    if not corr_df.empty:
+        corr_df.to_csv(out_root / "correlation.csv", index=True)
+    save_top_categories_tables(top_cats, out_root / "top_categories")
 
-    # 4. Генерация Markdown
-    md_file = report_path / "report.md"
-    with md_file.open("w", encoding="utf-8") as f:
-        # Используем параметр title
-        f.write(f"{title}\n\n")
-        f.write(f"Файл: `{Path(path).name}`\n\n")
-        f.write(f"Размер: **{meta.total_rows}** строк, **{meta.total_cols}** столбцов.\n\n")
+    # 4. Markdown-отчёт
+    md_path = out_root / "report.md"
+    with md_path.open("w", encoding="utf-8") as f:
+        f.write(f"# {title}\n\n") # кастомное название отчета
+        f.write(f"Исходный файл: `{Path(path).name}`\n\n")
+        f.write(f"Строк: **{summary.n_rows}**, столбцов: **{summary.n_cols}**\n\n")
 
-        f.write("## Оценка качества данных\n\n")
-        f.write(f"- Итоговый скор (Health Score): **{quality_metrics['health_score']:.2f}**\n")
-        f.write(f"- Макс. доля пропусков: **{quality_metrics['critical_null_ratio']:.2%}**\n")
-        
-        # Вывод флагов из новых эвристик
-        if quality_metrics['has_constant_cols']:
-            f.write("- ⚠️ **Найдены константные колонки** (одно значение на весь столбец).\n")
-        if quality_metrics['has_high_cardinality']:
-            f.write("- ⚠️ **Обнаружена высокая кардинальность** в категориальных признаках.\n")
-        if quality_metrics['has_id_duplicates']:
-            f.write("- ⛔ **Дубликаты в ID**: Поле, похожее на идентификатор, не уникально.\n")
-        
-        if quality_metrics['is_too_small']:
-            f.write("- ℹ️ Датасет слишком маленький (<100 строк).\n")
+        f.write("## Качество данных (эвристики)\n\n")
+        f.write(f"- Оценка качества: **{quality_flags['quality_score']:.2f}**\n")
+        f.write(f"- Макс. доля пропусков по колонке: **{quality_flags['max_missing_share']:.2%}**\n")
+        f.write(f"- Слишком мало строк: **{quality_flags['too_few_rows']}**\n")
+        f.write(f"- Слишком много колонок: **{quality_flags['too_many_columns']}**\n")
+        f.write(f"- Слишком много пропусков: **{quality_flags['too_many_missing']}**\n\n")
+        f.write(f"- Домашнее задание:\n")
+        f.write(f"- Категориальные признаки с очень большим числом уникальных значений: **{quality_flags['has_high_cardinality_categoricals']}**\n")
+        f.write(f"- Колонки с одинаковыми значениями: **{quality_flags['has_constant_columns']}**\n\n")
 
-        f.write("\n## Детализация\n\n")
-        f.write("1. **Сводка**: см. `summary.csv`\n")
-        f.write("2. **Пропуски**: см. `missing.csv` и график `missing_matrix.png`\n")
-        
-        if not corr_tbl.empty:
-            f.write("3. **Корреляции**: см. `correlation.csv` и `correlation_heatmap.png`\n")
+        f.write("## Колонки\n\n")
+        f.write("См. файл `summary.csv`.\n\n")
+
+        f.write("## Пропуски\n\n")
+        if missing_df.empty:
+            f.write("Пропусков нет или датасет пуст.\n\n")
         else:
-            f.write("3. **Корреляции**: числовых колонок нет или их недостаточно.\n")
-            
-        if top_vals:
-            f.write(f"4. **Категории**: топ-{top_k_categories} значений сохранены в папке `top_categories/`\n")
-        
-        f.write(f"5. **Распределения**: гистограммы (до {max_hist_columns} шт.) сохранены как `hist_*.png`\n")
+            f.write("См. файлы `missing.csv` и `missing_matrix.png`.\n\n")
 
-    # 5. Генерация графиков (передаем параметры)
-    # Используем max_hist_columns
-    plot_histograms_per_column(df, report_path, max_columns=max_hist_columns)
-    plot_missing_matrix(df, report_path / "missing_matrix.png")
-    plot_correlation_heatmap(df, report_path / "correlation_heatmap.png")
+        f.write("## Корреляция числовых признаков\n\n")
+        if corr_df.empty:
+            f.write("Недостаточно числовых колонок для корреляции.\n\n")
+        else:
+            f.write("См. `correlation.csv` и `correlation_heatmap.png`.\n\n")
 
-    typer.echo(f"Готово! Отчет сохранен в: {report_path}")
+        f.write("## Категориальные признаки\n\n")
+        if not top_cats:
+            f.write("Категориальные/строковые признаки не найдены.\n\n")
+        else:
+            f.write("См. файлы в папке `top_categories/`.\n\n")
+
+        f.write("## Гистограммы числовых колонок\n\n")
+        f.write("См. файлы `hist_*.png`.\n")
+
+    # 5. Картинки
+    plot_histograms_per_column(df, out_root, max_columns=max_hist_columns)
+    plot_missing_matrix(df, out_root / "missing_matrix.png")
+    plot_correlation_heatmap(df, out_root / "correlation_heatmap.png")
+
+    typer.echo(f"Отчёт сгенерирован в каталоге: {out_root}")
+    typer.echo(f"- Основной markdown: {md_path}")
+    typer.echo("- Табличные файлы: summary.csv, missing.csv, correlation.csv, top_categories/*.csv")
+    typer.echo("- Графики: hist_*.png, missing_matrix.png, correlation_heatmap.png")
 
 if __name__ == "__main__":
     app()

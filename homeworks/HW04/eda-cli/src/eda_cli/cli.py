@@ -1,19 +1,20 @@
 from __future__ import annotations
+
 from pathlib import Path
+from typing import Optional
+
 import pandas as pd
 import typer
-# Импорт обновленных сущностей
+
 from .core import (
-    DatasetInfo,
-    compute_health_metrics,
-    get_numeric_correlations,
-    flatten_dataset_info,
-    get_missing_data_report,
-    extract_dataset_info,
-    find_top_categories,
+    DatasetSummary,
+    compute_quality_flags,
+    correlation_matrix,
+    flatten_summary_for_print,
+    missing_table,
+    summarize_dataset,
+    top_categories,
 )
-# Предполагается, что визуализация (viz.py) была адаптирована аналогично, 
-# здесь используем условные имена функций визуализации
 from .viz import (
     plot_correlation_heatmap,
     plot_missing_matrix,
@@ -21,107 +22,138 @@ from .viz import (
     save_top_categories_tables,
 )
 
-app = typer.Typer(help="EDA Tool (S04 Version)")
+app = typer.Typer(help="Мини-CLI для EDA CSV-файлов")
 
-def _load_data_file(
-    fpath: Path,
-    sep_char: str = ",",
-    enc_type: str = "utf-8",
+
+def _load_csv(
+    path: Path,
+    sep: str = ",",
+    encoding: str = "utf-8",
 ) -> pd.DataFrame:
-    if not fpath.exists():
-        raise typer.BadParameter(f"File path invalid: '{fpath}'")
+    if not path.exists():
+        raise typer.BadParameter(f"Файл '{path}' не найден")
     try:
-        return pd.read_csv(fpath, sep=sep_char, encoding=enc_type)
-    except Exception as e:
-        raise typer.BadParameter(f"CSV read failed: {e}") from e
+        return pd.read_csv(path, sep=sep, encoding=encoding)
+    except Exception as exc:  # noqa: BLE001
+        raise typer.BadParameter(f"Не удалось прочитать CSV: {exc}") from exc
+
+
+
 
 @app.command()
 def overview(
-    path: str = typer.Argument(..., help="Path to CSV dataset."),
-    sep: str = typer.Option(",", help="Delimiter char."),
-    encoding: str = typer.Option("utf-8", help="Encoding format."),
+    path: str = typer.Argument(..., help="Путь к CSV-файлу."),
+    sep: str = typer.Option(",", help="Разделитель в CSV."),
+    encoding: str = typer.Option("utf-8", help="Кодировка файла."),
 ) -> None:
     """
-    Print basic dataset info to stdout.
+    Напечатать краткий обзор датасета:
+    - размеры;
+    - типы;
+    - простая табличка по колонкам.
     """
-    df = _load_data_file(Path(path), sep_char=sep, enc_type=encoding)
-    
-    info: DatasetInfo = extract_dataset_info(df)
-    flat_df = flatten_dataset_info(info)
-    
-    typer.echo(f"Rows count: {info.row_count}")
-    typer.echo(f"Cols count: {info.col_count}")
-    typer.echo("\nAttributes preview:")
-    typer.echo(flat_df.to_string(index=False))
+    df = _load_csv(Path(path), sep=sep, encoding=encoding)
+    summary: DatasetSummary = summarize_dataset(df)
+    summary_df = flatten_summary_for_print(summary)
+
+    typer.echo(f"Строк: {summary.n_rows}")
+    typer.echo(f"Столбцов: {summary.n_cols}")
+    typer.echo("\nКолонки:")
+    typer.echo(summary_df.to_string(index=False))
+
 
 @app.command()
 def report(
-    path: str = typer.Argument(..., help="Input CSV path."),
-    out_dir: str = typer.Option("reports", help="Directory for results."),
-    sep: str = typer.Option(",", help="CSV Separator."),
-    encoding: str = typer.Option("utf-8", help="Encoding."),
-    max_hist_columns: int = typer.Option(6, help="Limit hists for numeric cols."),
-    title: str = typer.Option("# EDA Report", help="Markdown title."),
-    top_k_categories: int = typer.Option(5, help="Top-K categories to show."),
+    path: str = typer.Argument(..., help="Путь к CSV-файлу."),
+    out_dir: str = typer.Option("reports", help="Каталог для отчёта."),
+    sep: str = typer.Option(",", help="Разделитель в CSV."),
+    encoding: str = typer.Option("utf-8", help="Кодировка файла."),
+    # Домашнее задание:
+    max_hist_columns: int = typer.Option(6, help="Максимум числовых колонок для гистограмм."),
+    top_k_categories: int = typer.Option(5, help="Количество top-значений выводить для категориальных признаков."),
+    title: str = typer.Option("EDA-отчёт", help="Название отчета"),
 ) -> None:
     """
-    Generates a comprehensive EDA report with metrics and charts.
+    Сгенерировать полный EDA-отчёт:
+    - текстовый overview и summary по колонкам (CSV/Markdown);
+    - статистика пропусков;
+    - корреляционная матрица;
+    - top-k категорий по категориальным признакам;
+    - картинки: гистограммы, матрица пропусков, heatmap корреляции.
     """
-    target_path = Path(out_dir)
-    target_path.mkdir(parents=True, exist_ok=True)
+    out_root = Path(out_dir)
+    out_root.mkdir(parents=True, exist_ok=True)
 
-    df = _load_data_file(Path(path), sep_char=sep, enc_type=encoding)
+    df = _load_csv(Path(path), sep=sep, encoding=encoding)
 
-    # 1. Сбор метрик
-    info = extract_dataset_info(df)
-    summary_df = flatten_dataset_info(info)
-    missing_stat = get_missing_data_report(df)
-    corr_matrix = get_numeric_correlations(df)
-    cat_tops = find_top_categories(df, k_elements=top_k_categories)
+    # 1. Обзор
+    summary = summarize_dataset(df)
+    summary_df = flatten_summary_for_print(summary)
+    missing_df = missing_table(df)
+    corr_df = correlation_matrix(df)
+    top_cats = top_categories(df, top_k=top_k_categories)
 
-    # 2. Оценка качества (переименованная функция)
-    quality = compute_health_metrics(info, missing_stat)
+    # 2. Качество в целом
+    quality_flags = compute_quality_flags(summary, missing_df)
 
-    # 3. Экспорт таблиц
-    summary_df.to_csv(target_path / "summary.csv", index=False)
-    if not missing_stat.empty:
-        missing_stat.to_csv(target_path / "missing.csv", index=True)
-    if not corr_matrix.empty:
-        corr_matrix.to_csv(target_path / "correlation.csv", index=True)
-    
-    # 4. Экспорт категорий
-    save_top_categories_tables(cat_tops, target_path / "top_categories")
+    # 3. Сохраняем табличные артефакты
+    summary_df.to_csv(out_root / "summary.csv", index=False)
+    if not missing_df.empty:
+        missing_df.to_csv(out_root / "missing.csv", index=True)
+    if not corr_df.empty:
+        corr_df.to_csv(out_root / "correlation.csv", index=True)
+    save_top_categories_tables(top_cats, out_root / "top_categories")
 
-    # 5. Генерация Markdown
-    md_out = target_path / "report.md"
-    with md_out.open("w", encoding="utf-8") as f:
-        f.write(f"{title}\n\n")
-        f.write(f"Source: `{Path(path).name}`\n\n")
-        f.write(f"Shape: **{info.row_count}** x **{info.col_count}**\n\n")
+    # 4. Markdown-отчёт
+    md_path = out_root / "report.md"
+    with md_path.open("w", encoding="utf-8") as f:
+        f.write(f"# {title}\n\n") # кастомное название отчета
+        f.write(f"Исходный файл: `{Path(path).name}`\n\n")
+        f.write(f"Строк: **{summary.n_rows}**, столбцов: **{summary.n_cols}**\n\n")
 
-        f.write("## Data Health Check\n\n")
-        f.write(f"- **Quality Index**: {quality['quality_index']:.2f}\n")
-        f.write(f"- Peak missing ratio: {quality['max_missing_rate']:.2%}\n")
-        
-        if quality['has_const_cols']:
-            f.write("- ⚠️ Contains constant columns.\n")
-        if quality['has_high_cardinality']:
-            f.write("- ⚠️ High cardinality detected in categories.\n")
-        if quality['has_id_duplicates']:
-            f.write("- ⛔ Possible ID duplicates found.\n")
-        if quality['warning_few_rows']:
-            f.write("- ℹ️ Dataset is very small.\n")
+        f.write("## Качество данных (эвристики)\n\n")
+        f.write(f"- Оценка качества: **{quality_flags['quality_score']:.2f}**\n")
+        f.write(f"- Макс. доля пропусков по колонке: **{quality_flags['max_missing_share']:.2%}**\n")
+        f.write(f"- Слишком мало строк: **{quality_flags['too_few_rows']}**\n")
+        f.write(f"- Слишком много колонок: **{quality_flags['too_many_columns']}**\n")
+        f.write(f"- Слишком много пропусков: **{quality_flags['too_many_missing']}**\n\n")
+        f.write(f"- Домашнее задание:\n")
+        f.write(f"- Категориальные признаки с очень большим числом уникальных значений: **{quality_flags['has_high_cardinality_categoricals']}**\n")
+        f.write(f"- Колонки с одинаковыми значениями: **{quality_flags['has_constant_columns']}**\n\n")
 
-        f.write("\n## Artifacts\n\n")
-        f.write("- See `summary.csv`, `missing.csv`, `correlation.csv` for raw data.\n")
-        f.write("- Charts saved as PNG in this folder.\n")
+        f.write("## Колонки\n\n")
+        f.write("См. файл `summary.csv`.\n\n")
 
-    # 6. Рисование графиков
-    plot_histograms_per_column(df, target_path, max_columns=max_hist_columns)
-    plot_missing_matrix(df, target_path / "missing_matrix.png")
-    plot_correlation_heatmap(df, target_path / "correlation_heatmap.png")
+        f.write("## Пропуски\n\n")
+        if missing_df.empty:
+            f.write("Пропусков нет или датасет пуст.\n\n")
+        else:
+            f.write("См. файлы `missing.csv` и `missing_matrix.png`.\n\n")
 
-    typer.echo(f"Report completed at: {target_path}")
+        f.write("## Корреляция числовых признаков\n\n")
+        if corr_df.empty:
+            f.write("Недостаточно числовых колонок для корреляции.\n\n")
+        else:
+            f.write("См. `correlation.csv` и `correlation_heatmap.png`.\n\n")
+
+        f.write("## Категориальные признаки\n\n")
+        if not top_cats:
+            f.write("Категориальные/строковые признаки не найдены.\n\n")
+        else:
+            f.write("См. файлы в папке `top_categories/`.\n\n")
+
+        f.write("## Гистограммы числовых колонок\n\n")
+        f.write("См. файлы `hist_*.png`.\n")
+
+    # 5. Картинки
+    plot_histograms_per_column(df, out_root, max_columns=max_hist_columns)
+    plot_missing_matrix(df, out_root / "missing_matrix.png")
+    plot_correlation_heatmap(df, out_root / "correlation_heatmap.png")
+
+    typer.echo(f"Отчёт сгенерирован в каталоге: {out_root}")
+    typer.echo(f"- Основной markdown: {md_path}")
+    typer.echo("- Табличные файлы: summary.csv, missing.csv, correlation.csv, top_categories/*.csv")
+    typer.echo("- Графики: hist_*.png, missing_matrix.png, correlation_heatmap.png")
 
 if __name__ == "__main__":
     app()
