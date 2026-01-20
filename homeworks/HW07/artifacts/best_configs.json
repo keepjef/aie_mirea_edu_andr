@@ -1,0 +1,41 @@
+{
+    "dataset1": {
+        "best_model": "KMeans",
+        "params": {
+            "kmeans": {
+                "n_clusters": 2
+            },
+            "dbscan": {
+                "eps": 0.6,
+                "min_samples": 10
+            }
+        },
+        "selection_criterion": "silhouette_score"
+    },
+    "dataset2": {
+        "best_model": "DBSCAN",
+        "params": {
+            "kmeans": {
+                "n_clusters": 2
+            },
+            "dbscan": {
+                "eps": 0.1,
+                "min_samples": 10
+            }
+        },
+        "selection_criterion": "silhouette_score"
+    },
+    "dataset3": {
+        "best_model": "DBSCAN",
+        "params": {
+            "kmeans": {
+                "n_clusters": 3
+            },
+            "dbscan": {
+                "eps": 0.1,
+                "min_samples": 10
+            }
+        },
+        "selection_criterion": "silhouette_score"
+    }
+}

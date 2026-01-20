@@ -1,7 +1,0 @@
-[[preprocess.scaling]]
-method = "standard"
-columns = ["z_noise"]
-
-[[preprocess.scaling]]
-method = "robust"
-columns = ["x1", "x2"]
